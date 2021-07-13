@@ -12,6 +12,6 @@ geometries efficiently.
 are compared in __*st_segments_version_testing.Rmd*__.
 <span style="color:red">__Warning__</span>: The run time of the code included
 in this __*.Rmd*__ is quite longsome. So you may want to examine the
-[documented outcome](./st_segments_version_comparison.html), especially the
-printed out time difference for running the code chunk with `microbenchmark()`,
-before compiling this __*.Rmd*__  to a __*.html*__ yourself.
+[documented outcome](https://a-benini.github.io/st_segments_version_comparison/st_segments_version_comparison.html)
+, especially the printed out time difference for running the code chunk with
+`microbenchmark()`, before compiling this __*.Rmd*__  to a __*.html*__ yourself.
