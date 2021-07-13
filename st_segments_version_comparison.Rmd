@@ -1,0 +1,310 @@
+---
+title: "Compare two versions of `st_segments()`"
+author: "Attilio Benini, attilio.benini@gmx"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    number_sections: no
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    toc_depth: 3
+linkcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE}
+Sys.setenv(LANG = "en_US.UTF-8")
+```
+
+## Introduction
+
+The R-package `nngeo` includes the function
+[`st_segments`](https://michaeldorman.github.io/nngeo/reference/st_segments.html)
+, which splits lines or polygons into separate segments. Applied to `sf`
+objects with a rather small number of geometries, `st_segments` works
+fairly handily. However, when trying to process a set of some 14'000
+`LINESTRING`s, `st_segments` was still processing after several hours. To be
+precise, this disappointing outcome was observed with the version of `nngeo`
+[currently available on CRAN](https://CRAN.R-project.org/package=nngeo)
+and with its
+[latest counterpart on GitHub](https://github.com/michaeldorman/nngeo/)
+(both version 0.4.3).
+
+A [forked branch of `nngeo`](https://github.com/a-benini/nngeo/tree/st_segments_efficient) 
+modifies `st_segments()`with the objective of processing larger numbers
+of geometries efficiently. This is achieved by a
+[code modification](https://github.com/a-benini/nngeo/commit/34a33274b28f31b99b3cbd9c5d239a7c395482f4) consisting of three steps:
+
+1. `sf::st_as_sf(data.table::rbindlist(<list_of_sf>))` replaces
+`do.call(rbind, <list_of_sf>)`, which speeds up compiling `<list_of_sf>` to a
+single `sf` object.
+2. Besides its potential speed gain, `st_as_sf(rbindlist())` has a downside:
+Unlike `do.call(rbind, <list_of_sf>)`, it creates an object with a `bbox`
+identical to the `bbox` of the first element of `<list_of_sf>`. A
+[simple trick (`<sf> <- <sf>[1:nrow(<sf>), ]` ) ](https://github.com/Rdatatable/data.table/issues/4681)
+subsequently applied fixes this issue.
+3. Finally the class `data.table` inherited
+from `rbindlist()`must be overwritten in order for `st_segments` to return a
+standard `sf`-object as output.
+
+Below we explore the time efficiency  of the two `st_segments` versions:
+
+* `st_segments_eff`: synonym for the
+[forked `st_segments`](https://github.com/a-benini/nngeo/commit/34a33274b28f31b99b3cbd9c5d239a7c395482f4)
+* `st_segments`: the current 'official' version of `nngeo`
+
+Side notes: 
+
+* Some information / discussion on the efficiency of combining `list`s
+of `sf` objects to a single `dataframe` can be found
+[here](https://github.com/r-spatial/sf/issues/798#).
+* `st_as_sf(rbindlist(`<list_of_sf>`))` not only returns an object with a `bbox`
+identical to the `bbox` of the first element of `<list_of_sf>`, but also adopts
+the first element's CRS without checking whether all elements have the same CRS.
+Since all generated segments originate from the same geometry set, the argument
+`x`, this isn't an issue here. Else a prior checking of CRS-uniformity would be
+necessary. 
+
+## Packages required
+
+```{r, message = FALSE}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(sf)
+library(data.table)
+library(microbenchmark)
+library(kableExtra)
+```
+
+External dependencies versions of the libraries linked to `sf`:
+
+```{r}
+sf::sf_extSoftVersion()
+```
+
+## Two versions of `st_segments()`
+
+### `st_segments_eff`
+
+The a.m. forked branch of `nngeo` can be found at 
+<https://github.com/a-benini/nngeo/tree/st_segments_efficient>
+(forked from <https://github.com/michaeldorman/nngeo/>). It contains
+[the very version of `st_segments()`](https://github.com/a-benini/nngeo/commit/34a33274b28f31b99b3cbd9c5d239a7c395482f4)
+that should be more efficient than the currently available developer version.
+The corresponding function code is saved here as `st_segments_eff`:
+
+```{r}
+st_segments_eff <- function(x, progress = TRUE) {
+
+  # Get or transform to geometry
+  geom = st_geometry(x)
+
+  # Get attributes
+  if(class(x)[1] == "sf") dat = st_drop_geometry(x) else dat = NULL
+
+  # Progress bar
+  if(progress) pb = utils::txtProgressBar(min = 0, max = length(geom), initial = 0, style = 3)
+
+  # For each feature...
+  final = list()
+  for(i in 1:length(geom)) {
+
+    # Progress
+    if(progress) utils::setTxtProgressBar(pb, i)
+
+    # Current geometry
+    geom1 = geom[i]
+
+    # Cast LINESTRING
+    if(st_is(geom1, "MULTIPOLYGON")) geom1 = st_cast(geom1, "POLYGON")
+    line = st_cast(geom1, "LINESTRING")
+
+    result = list()
+    # For each LINESTRING...
+    for(j in 1:length(line)) {
+
+      # Split to segments
+      pnt = st_cast(line[j], "POINT")
+
+      # For each segment...
+      tmp = list()
+      for(k in 1:(length(pnt)-1)) {
+        tmp[[k]] = pnt[c(k, k+1)]
+      }
+      tmp = lapply(tmp, st_combine)
+      tmp = lapply(tmp, st_cast, "LINESTRING")
+      tmp = do.call(c, tmp)
+      result[[j]] = tmp
+
+    }
+
+    # Combine
+    result = do.call(c, result)
+
+    # Add attributes
+    if(!is.null(dat)) result = st_sf(result, dat[i, , drop = FALSE])
+
+    # Add to 'final'
+    final[[i]] = result
+
+  }
+
+  # Progress
+  if(progress) cat("\n")
+
+  # Combine
+  if(!is.null(dat)) {
+    final = st_as_sf(data.table::rbindlist(final))
+    final = final[1:nrow(final), ]
+    class(final) = c("sf", "data.frame")
+  } else {
+    final = do.call(c, final)
+  }
+
+  # Return result
+  return(final)
+  }
+```
+
+### `st_segments`
+
+Install `nngeo` version 0.4.3 from CRAN:
+
+```{r}
+devtools::install_version(
+  "nngeo", version = "0.4.3", repos = "http://cran.us.r-project.org",
+  force = TRUE, quiet = TRUE
+  )
+library(nngeo)
+packageVersion("nngeo")
+```
+
+## Check of versions of `st_segments()`
+
+Check if the two versions of `st_segments()` differ:
+
+```{r, collapse = TRUE}
+all.equal(st_segments_eff, st_segments)
+```
+
+Get some polygons to tryout the two versions of `st_segments()`:
+
+```{r}
+nc <- st_read(system.file("gpkg/nc.gpkg", package = "sf"), quiet = TRUE)
+```
+
+Check if the two versions of `st_segments()` return the same output:
+
+```{r, collapse = TRUE}
+nc_seg_eff <- st_segments_eff(nc, FALSE)
+nc_seg     <- st_segments(nc, FALSE)
+all.equal(nc_seg_eff, nc_seg)
+```
+
+## Run-time of versions of `st_segments()`
+
+`list` some `sf` objects with different numbers of geometries (`n`):
+
+```{r}
+n <- c(10, seq(100, 1000, 100))
+set.seed(1234)
+l <- lapply(n, function(x) dplyr::slice_sample(nc, n = x, replace = TRUE))
+```
+
+Get run times of `st_segments()` and `st_segments_eff()` when applied to each
+`list`ed `sf` object:
+
+```{r}
+t0 <- Sys.time()
+l_mircobenchmark <- lapply(
+  l,
+  function(x) {
+    microbenchmark(
+      st_segments(x, FALSE),
+      st_segments_eff(x, FALSE),
+      times = 5L
+      )
+    }
+  )
+Sys.time() - t0
+```
+
+Table mean run times:
+
+```{r tab}
+cap_text <- "Means of overall and per geometry processing times for combinations of numbers of geometries (n) and function versions."
+tibble(n, l_mircobenchmark) %>%
+  unnest(l_mircobenchmark) %>%
+  group_by(n, expr) %>%
+  summarise(time = mean(time), .groups = "drop") %>%
+  mutate(
+    time = time / 10^9, # convert nanoseconds into seconds
+    time_per_geom = time / n # mean time per input geometry
+  ) %>%
+  pivot_wider(names_from = expr, values_from = c(time, time_per_geom)) %>%
+  setNames(., names(.) %>% str_remove_all("time_|per_geom_|(x, FALSE)")) %>%
+  kable("html", caption = cap_text, digits = 3) %>%
+  kable_styling(position = "left", font_size = 12, full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "overall" = 2, "per input geometry" = 2)) %>%
+  add_header_above(c(" ", "mean run time [s]" = 4))
+```
+
+Plot run times:
+
+```{r plot, fig.align = "left", fig.cap = "Number of geometries of an input `sf` object vs. run time of `st_segments()` and `st_segments_eff()`."}
+tibble(n, l_mircobenchmark) %>%
+  unnest(l_mircobenchmark) %>%
+  mutate(
+    overall = time / 10^9, # convert nanoseconds into seconds
+    `per input geometry` = overall / n, # mean time per input geometry
+    time = NULL
+  ) %>%
+  pivot_longer(-c(n, expr), names_to = "key", values_to = "time") %>%
+  ggplot(aes(x = n, y = time, col = expr)) +
+  geom_point(shape = 1, alpha = 0.6, size = 3) +
+  facet_wrap(vars(key), ncol = 1, scales = "free_y") +
+  scale_y_continuous(limits = function(y) {c(0, max(y) * 1.05)} ) +
+  labs(x = "number of input geometries", y = "run time [s]", col = "function version") +
+  theme_bw()
+```
+
+## Conclusions
+
+The above plot (figure \@ref(fig:plot)) reveals the following:
+
+* In the case of `sf` objects with very few geometries `st_segment_eff` does not 
+always process faster than `st_segment`. But this hardly ever matters, for one
+way or the other overall run times are anyhow quite minor.
+* With rising numbers of geometries of a processed `sf` object the overall time
+efficiency of `st_segment_eff` outperforms the one of `st_segment`.
+* `st_segment`'s run time seems to respond somewhat exponentially to the number
+of geometries of a `sf` input, whereas `st_segment_eff` appears to follow a
+steady slope.
+* Quite obviously `st_segment`'s run time per input geometry rises with the
+numbers of input geometries. By contrast, in the case of `st_segment_eff` this
+metric is more or less constant.
+
+Thus it is sound to say that replacing `do.call(rbind, <list_of_sf>)` with
+`sf::st_as_sf(data.table::rbindlist(<list_of_sf>))` does not only
+reduce the overall processing time, it also tackles the issue of exponentially
+more time consuming processing when it comes to handling `sf` objects with
+increasing numbers of geometries.
+
+Experience made so far has shown that `st_segment_eff` is capable of processing
+a `sf` object of some 95'000 `LINESTRING`s within about 8 minutes. This
+corresponds to approximately 0.005 seconds per geometry, which is about 1/3 of
+the run time required in the above demonstration (s. table \@ref(tab:tab)).
+This difference in performance is most likely due to, on average, a rather small
+number segments originating from each `LINESTRING`. Thus besides the number of
+geometries, their complexity appears to dictate also the run time (on a given
+operation system / computer). So one may want to diagnose the time span of
+`st_segment_eff` applied to a sample of a large set of geometries before running
+the whole set in order to roughly estimate processing time.
