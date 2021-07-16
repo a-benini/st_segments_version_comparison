@@ -1,6 +1,5 @@
-.Rproj.user
-.Rhistory
-.RData
-.Ruserdata
-README.html
-st_segments_version_comparison.Rproj
+*
+!.gitignore
+!README.md
+!st_segments_version_comparison.Rmd
+!st_segments_version_comparison.html
