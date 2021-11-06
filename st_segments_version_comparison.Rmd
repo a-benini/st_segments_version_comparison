@@ -1,6 +1,6 @@
 ---
 title: "Compare two versions of `st_segments()`"
-author: "Attilio Benini, attilio.benini@gmx"
+author: "Attilio Benini, attilio.benini@gmx.net"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   bookdown::html_document2:
